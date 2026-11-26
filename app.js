@@ -107,8 +107,58 @@ async function extractTextFromPDF(file) {
     return extracted.trim();
 }
 
-function handleFileUpload() {
+async function processUploadedFile(file) {
+    if (!file) {
+        return;
+    }
+
+    const lowerName = (file.name || "").toLowerCase();
+    const isAcceptedType =
+        file.type === "application/pdf" ||
+        lowerName.endsWith(".pdf") ||
+        lowerName.endsWith(".eoghan");
+
+    if (!isAcceptedType) {
+        showError("Please upload a valid PDF file.");
+        return;
+    }
+
+    const previousMessage = dom.fileUploadedMessage.textContent;
+    hideError();
+    dom.fileUploadedMessage.textContent = "Reading PDF...";
+
+    try {
+        const extractedText = await extractTextFromPDF(file);
+        if (!extractedText) {
+            throw new Error("Could not extract any text from this PDF. Scanned image-only PDFs are not supported.");
+        }
+
+        state.pdf.name = file.name;
+        state.pdf.extractedText = extractedText;
+
+        // Reset to setup mode so a new test can be generated from this PDF
+        state.mode = "setup";
+        state.currentSaveId = null;
+        state.test.questions = { mcq: [], saq: [] };
+        state.test.answers = { mcqSelectedIndex: [], saqText: [] };
+        state.test.marking = null;
+        renderQuestions();
+
+        dom.fileUploadedMessage.textContent = `✔ Uploaded: ${file.name}`;
+    } catch (err) {
+        console.error("PDF extraction failed:", err);
+        dom.fileUploadedMessage.textContent = previousMessage;
+        showError(err.message || "Failed to read PDF file. Please upload a valid PDF.");
+    }
+}
+
+function handleFileUpload(droppedFile) {
     if (state.isBusy) {
+        return;
+    }
+
+    if (droppedFile instanceof File) {
+        processUploadedFile(droppedFile);
         return;
     }
 
@@ -116,38 +166,10 @@ function handleFileUpload() {
     input.type = "file";
     input.accept = CONFIG.acceptedFileTypes;
 
-    input.onchange = async () => {
+    input.onchange = () => {
         const file = input.files[0];
-        if (!file) {
-            return;
-        }
-
-        const previousMessage = dom.fileUploadedMessage.textContent;
-        hideError();
-        dom.fileUploadedMessage.textContent = "Reading PDF...";
-
-        try {
-            const extractedText = await extractTextFromPDF(file);
-            if (!extractedText) {
-                throw new Error("Could not extract any text from this PDF. Scanned image-only PDFs are not supported.");
-            }
-
-            state.pdf.name = file.name;
-            state.pdf.extractedText = extractedText;
-
-            // Reset to setup mode so a new test can be generated from this PDF
-            state.mode = "setup";
-            state.currentSaveId = null;
-            state.test.questions = { mcq: [], saq: [] };
-            state.test.answers = { mcqSelectedIndex: [], saqText: [] };
-            state.test.marking = null;
-            renderQuestions();
-
-            dom.fileUploadedMessage.textContent = `✔ Uploaded: ${file.name}`;
-        } catch (err) {
-            console.error("PDF extraction failed:", err);
-            dom.fileUploadedMessage.textContent = previousMessage;
-            showError(err.message || "Failed to read PDF file. Please upload a valid PDF.");
+        if (file) {
+            processUploadedFile(file);
         }
     };
 
@@ -648,9 +670,11 @@ function syncControlsToMode() {
 
     dom.uploadFileBtn.disabled = state.isBusy;
     dom.newExamBtn.hidden = !(state.mode === "marked" || state.mode === "saved");
+    dom.mainButton.classList.toggle("is-saved", !state.isBusy && state.mode === "saved");
 
     if (state.isBusy) {
-        dom.mainButton.textContent = "Loading...";
+        const busyLabel = state.mode === "setup" ? "Generating Questions..." : "Marking Answers...";
+        dom.mainButton.innerHTML = `<span class="btn-spinner" aria-hidden="true"></span><span>${busyLabel}</span>`;
         dom.mainButton.disabled = true;
         return;
     }
@@ -662,10 +686,10 @@ function syncControlsToMode() {
         dom.mainButton.textContent = "Submit Answers";
         dom.mainButton.disabled = false;
     } else if (state.mode === "marked") {
-        dom.mainButton.textContent = "Save";
+        dom.mainButton.textContent = "Save Results";
         dom.mainButton.disabled = false;
     } else if (state.mode === "saved") {
-        dom.mainButton.textContent = "Saved!";
+        dom.mainButton.textContent = "✔ Saved!";
         dom.mainButton.disabled = true;
     }
 }
@@ -720,19 +744,23 @@ function renderQuestions() {
     dom.questionsContainer.appendChild(saqSection);
 
     state.test.questions.mcq.forEach((q, i) => {
-        let html = `<div class="question" data-qtype="mcq" data-index="${i}">
-                        <p><strong>${i + 1}) ${escapeHTML(q.prompt)}</strong></p>`;
+        let html = `<div class="question question-card" data-qtype="mcq" data-index="${i}">
+                        <div class="question-header">
+                            <span class="question-badge">Q${i + 1}</span>
+                            <p class="question-prompt">${escapeHTML(q.prompt)}</p>
+                        </div>
+                        <div class="mcq-options">`;
 
         q.choices.forEach((choice, cIndex) => {
             const checked = state.test.answers.mcqSelectedIndex[i] === cIndex ? "checked" : "";
             const disabled = isLocked ? "disabled" : "";
-            html += `<label>
+            html += `<label class="mcq-option">
                         <input type="radio" name="q${i + 1}" value="${cIndex}" ${checked} ${disabled}>
-                        ${escapeHTML(choice)}
-                    </label><br>`;
+                        <span class="mcq-option-text">${escapeHTML(choice)}</span>
+                    </label>`;
         });
 
-        html += `</div>`;
+        html += `</div></div>`;
         mcqSection.insertAdjacentHTML("beforeend", html);
     });
 
@@ -740,9 +768,12 @@ function renderQuestions() {
         const questionNumber = state.test.questions.mcq.length + i + 1;
         const existingText = state.test.answers.saqText[i] ?? "";
         const readonly = isLocked ? "readonly" : "";
-        const html = `<div class="question" data-qtype="saq" data-index="${i}">
-                        <p><strong>${questionNumber}) ${escapeHTML(q.prompt)}</strong></p>
-                        <textarea ${readonly}>${escapeHTML(existingText)}</textarea>
+        const html = `<div class="question question-card" data-qtype="saq" data-index="${i}">
+                        <div class="question-header">
+                            <span class="question-badge">Q${questionNumber}</span>
+                            <p class="question-prompt">${escapeHTML(q.prompt)}</p>
+                        </div>
+                        <textarea placeholder="Write your answer here..." ${readonly}>${escapeHTML(existingText)}</textarea>
                     </div>`;
         saqSection.insertAdjacentHTML("beforeend", html);
     });
@@ -757,13 +788,28 @@ function applyMarkingToUI() {
 
     const { totals } = state.test.marking;
 
-    // Render overall score banner at top of questions container
+    // Render overall score hero banner at top of questions container
     dom.questionsContainer.querySelectorAll(".total-score-banner").forEach(el => el.remove());
     if (totals.totalMax > 0) {
         const pct = Math.round((totals.totalScore / totals.totalMax) * 100);
+        const chips = [];
+        if (totals.mcqMax > 0) {
+            chips.push(`<span class="score-chip">MCQs: ${totals.mcqScore}/${totals.mcqMax}</span>`);
+        }
+        if (totals.saqMax > 0) {
+            chips.push(`<span class="score-chip">Short Answers: ${totals.saqScore}/${totals.saqMax}</span>`);
+        }
+
         const banner = document.createElement("div");
         banner.className = "total-score-banner";
-        banner.textContent = `Total Score: ${totals.totalScore}/${totals.totalMax} (${pct}%)`;
+        banner.innerHTML = `
+            <span class="score-banner-eyebrow">Exam Results</span>
+            <div class="score-banner-main">
+                <span class="score-banner-fraction">${totals.totalScore} / ${totals.totalMax}</span>
+                <span class="score-banner-percent">${pct}%</span>
+            </div>
+            ${chips.length > 0 ? `<div class="score-banner-breakdown">${chips.join("")}</div>` : ""}
+        `;
         dom.questionsContainer.prepend(banner);
     }
 
@@ -771,10 +817,10 @@ function applyMarkingToUI() {
     const saqHeading = document.getElementById("saq-heading");
 
     if (mcqHeading && totals.mcqMax > 0) {
-        mcqHeading.textContent = `Multiple Choice Questions - Score: ${totals.mcqScore}/${totals.mcqMax}`;
+        mcqHeading.textContent = `Multiple Choice Questions — ${totals.mcqScore}/${totals.mcqMax}`;
     }
     if (saqHeading && totals.saqMax > 0) {
-        saqHeading.textContent = `Short Answer Questions - Score: ${totals.saqScore}/${totals.saqMax}`;
+        saqHeading.textContent = `Short Answer Questions — ${totals.saqScore}/${totals.saqMax}`;
     }
 
     const mcqDivs = dom.questionsContainer.querySelectorAll('.question[data-qtype="mcq"]');
@@ -784,29 +830,33 @@ function applyMarkingToUI() {
             return;
         }
 
-        const promptPara = div.querySelector("p");
-        if (promptPara) {
-            promptPara.querySelectorAll("span").forEach(span => span.remove());
-            const scoreSpan = document.createElement("span");
-            scoreSpan.textContent = marking.isCorrect ? " 1/1" : " 0/1";
-            promptPara.appendChild(scoreSpan);
+        const header = div.querySelector(".question-header");
+        if (header) {
+            header.querySelectorAll(".score-pill").forEach(el => el.remove());
+            const scorePill = document.createElement("span");
+            scorePill.className = `score-pill ${marking.isCorrect ? "correct" : "incorrect"}`;
+            scorePill.textContent = marking.isCorrect ? "1/1" : "0/1";
+            header.appendChild(scorePill);
         }
 
-        const labels = div.querySelectorAll("label");
+        const labels = div.querySelectorAll(".mcq-option");
         labels.forEach((label, cIndex) => {
+            label.classList.remove("option-correct", "option-incorrect");
             label.querySelectorAll(".correct-tick, .incorrect-tick").forEach(span => span.remove());
 
             if (cIndex === marking.correctIndex) {
+                label.classList.add("option-correct");
                 const correctSpan = document.createElement("span");
                 correctSpan.className = "correct-tick";
-                correctSpan.textContent = " ✔";
+                correctSpan.textContent = "✔ Correct";
                 label.appendChild(correctSpan);
             }
 
             if (marking.selectedIndex !== null && cIndex === marking.selectedIndex && !marking.isCorrect) {
+                label.classList.add("option-incorrect");
                 const incorrectSpan = document.createElement("span");
                 incorrectSpan.className = "incorrect-tick";
-                incorrectSpan.textContent = " ✘";
+                incorrectSpan.textContent = "✘ Your Answer";
                 label.appendChild(incorrectSpan);
             }
         });
@@ -814,17 +864,34 @@ function applyMarkingToUI() {
 
     const saqDivs = dom.questionsContainer.querySelectorAll('.question[data-qtype="saq"]');
     saqDivs.forEach((div, i) => {
-        div.querySelectorAll("p[data-feedback='1']").forEach(p => p.remove());
+        div.querySelectorAll("[data-feedback='1']").forEach(el => el.remove());
 
         const res = state.test.marking.saq[i];
         if (!res) {
             return;
         }
 
-        const feedbackPara = document.createElement("p");
-        feedbackPara.setAttribute("data-feedback", "1");
-        feedbackPara.innerHTML = `<strong>Score: ${res.score}/${res.maxScore}</strong> - ${escapeHTML(res.feedback)}`;
-        div.appendChild(feedbackPara);
+        const scoreClass = res.score === res.maxScore ? "correct" : res.score === 0 ? "incorrect" : "partial";
+        const header = div.querySelector(".question-header");
+        if (header) {
+            header.querySelectorAll(".score-pill").forEach(el => el.remove());
+            const scorePill = document.createElement("span");
+            scorePill.className = `score-pill ${scoreClass}`;
+            scorePill.textContent = `${res.score}/${res.maxScore}`;
+            header.appendChild(scorePill);
+        }
+
+        const feedbackBox = document.createElement("div");
+        feedbackBox.className = "saq-feedback-box";
+        feedbackBox.setAttribute("data-feedback", "1");
+        feedbackBox.innerHTML = `
+            <div class="saq-feedback-header">
+                <span class="saq-feedback-label">AI Feedback</span>
+                <span class="score-pill ${scoreClass}">Score: ${res.score}/${res.maxScore}</span>
+            </div>
+            <p class="saq-feedback-text">${escapeHTML(res.feedback)}</p>
+        `;
+        div.appendChild(feedbackBox);
     });
 
     syncControlsToMode();
@@ -835,25 +902,29 @@ function renderSavedTestsList() {
 
     const index = loadSavesIndex();
     if (index.length === 0) {
-        dom.sidebarContent.innerHTML = "<p class='empty-saves-msg'>No saved tests yet.</p>";
+        dom.sidebarContent.innerHTML = "<p class='empty-saves-msg'>No saved tests yet. Complete and save an exam to see it here.</p>";
         return;
     }
 
     index.forEach(item => {
         const quizDiv = document.createElement("div");
         quizDiv.className = "saved-quiz-item";
+        if (item.id === state.currentSaveId) {
+            quizDiv.classList.add("is-active");
+        }
 
         const quizLink = document.createElement("a");
         quizLink.textContent = item.name;
         quizLink.className = "saved-quiz-link";
+        quizLink.title = item.name;
         quizLink.addEventListener("click", () => loadSavedTest(item.id));
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
-        deleteBtn.textContent = "🗑";
         deleteBtn.className = "delete-btn";
         deleteBtn.title = "Delete saved test";
         deleteBtn.setAttribute("aria-label", `Delete ${item.name}`);
+        deleteBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg>`;
         deleteBtn.addEventListener("click", () => {
             deleteTestById(item.id);
             if (state.currentSaveId === item.id && state.mode === "saved") {
@@ -1000,7 +1071,31 @@ function bindEventListeners() {
         }
     });
 
-    dom.uploadFileBtn.addEventListener("click", handleFileUpload);
+    dom.uploadFileBtn.addEventListener("click", () => handleFileUpload());
+    ["dragenter", "dragover"].forEach(eventName => {
+        dom.uploadFileBtn.addEventListener(eventName, event => {
+            event.preventDefault();
+            if (!state.isBusy) {
+                dom.uploadFileBtn.classList.add("drag-over");
+            }
+        });
+    });
+    ["dragleave", "dragend"].forEach(eventName => {
+        dom.uploadFileBtn.addEventListener(eventName, event => {
+            if (!dom.uploadFileBtn.contains(event.relatedTarget)) {
+                dom.uploadFileBtn.classList.remove("drag-over");
+            }
+        });
+    });
+    dom.uploadFileBtn.addEventListener("drop", event => {
+        event.preventDefault();
+        dom.uploadFileBtn.classList.remove("drag-over");
+        const droppedFile = event.dataTransfer?.files?.[0];
+        if (droppedFile) {
+            handleFileUpload(droppedFile);
+        }
+    });
+
     dom.questionsForm.addEventListener("submit", handleFormSubmit);
     dom.newExamBtn.addEventListener("click", resetToSetup);
 

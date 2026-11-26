@@ -5,6 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Auto-Marking Exam Generator</title>
 
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
     <link rel="stylesheet" href="styles.css">
 
     <script src="https://cdn.jsdelivr.net/npm/js-confetti@latest/dist/js-confetti.browser.js"></script>
@@ -12,9 +16,24 @@
 </head>
 <body>
     <header class="fixed-header">
-        <h1>AI Auto-Marking Exam Generator</h1>
-        <button type="button" id="open-sidebar-btn" class="open-btn" aria-label="Open saved tests">☰</button>
-        <button type="button" id="open-settings-btn" class="settings-btn" aria-label="Open settings">⚙️</button>
+        <div class="header-inner">
+            <button type="button" id="open-sidebar-btn" class="open-btn header-action-btn" aria-label="Open saved tests">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"></path>
+                </svg>
+                <span class="header-btn-label">Saved Tests</span>
+            </button>
+
+            <h1 class="app-title">AI Auto-Marking Exam Generator</h1>
+
+            <button type="button" id="open-settings-btn" class="settings-btn header-action-btn" aria-label="Open settings">
+                <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+                <span class="header-btn-label">Settings</span>
+            </button>
+        </div>
     </header>
 
     <div class="overlay" id="sidebar-overlay"></div>
@@ -22,71 +41,132 @@
 
     <!-- Saved Tests Drawer -->
     <aside class="sidebar" id="sidebar" aria-label="Saved Tests">
-        <h3>Saved Tests</h3>
-        <button type="button" class="close-btn" id="close-sidebar-btn" aria-label="Close saved tests">×</button>
+        <div class="drawer-header">
+            <h3>Saved Tests</h3>
+            <button type="button" class="close-btn" id="close-sidebar-btn" aria-label="Close saved tests">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
         <div class="sidebar-content" id="sidebar-content"></div>
     </aside>
 
     <!-- Settings Drawer -->
     <aside class="settings-sidebar" id="settings-sidebar" aria-label="Settings">
-        <h3>Settings</h3>
-        <button type="button" class="close-btn" id="close-settings-btn" aria-label="Close settings">×</button>
+        <div class="drawer-header">
+            <h3>Settings</h3>
+            <button type="button" class="close-btn" id="close-settings-btn" aria-label="Close settings">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
         <div class="settings-sidebar-content">
             <div class="settings-group">
-                <label for="api-key-input">OpenAI API Key (optional):</label>
-                <input type="password" id="api-key-input" placeholder="Leave blank to use server key" autocomplete="off">
-                <button type="button" id="save-api-key-btn">Save Key</button>
-                <div id="api-key-status" class="settings-status"></div>
+                <label for="api-key-input">OpenAI API Key (optional)</label>
+                <p class="settings-hint">Leave blank to use the built-in server proxy, or add your own key to call OpenAI directly from your browser.</p>
+                <input type="password" id="api-key-input" placeholder="sk-... (optional override)" autocomplete="off">
+                <button type="button" id="save-api-key-btn" class="primary-btn">Save Key</button>
+                <div id="api-key-status" class="settings-status" aria-live="polite"></div>
             </div>
         </div>
     </aside>
 
-    <!-- Save Name Popup -->
+    <!-- Save Name Modal -->
     <div class="popup" id="save-popup" role="dialog" aria-modal="true" aria-labelledby="save-popup-title">
-        <button type="button" class="close-btn" id="close-popup-btn" aria-label="Close save dialog">×</button>
-        <h3 id="save-popup-title">Name this save:</h3>
-        <input type="text" id="name-input" placeholder="Enter name">
-        <button type="button" id="submit-name-btn">Submit</button>
+        <div class="popup-header">
+            <div>
+                <h3 id="save-popup-title">Save Exam Results</h3>
+                <p class="popup-subtitle">Give this attempt a name to revisit it anytime from Saved Tests.</p>
+            </div>
+            <button type="button" class="close-btn" id="close-popup-btn" aria-label="Close save dialog">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </button>
+        </div>
+        <div class="popup-body">
+            <label for="name-input" class="sr-only">Save name</label>
+            <input type="text" id="name-input" placeholder="e.g. Week 4 Algorithms Practice">
+            <button type="button" id="submit-name-btn" class="primary-btn">Save Exam</button>
+        </div>
     </div>
 
     <!-- Main Container -->
     <main class="container">
-        <button type="button" id="upload-file-btn">Upload PDF</button>
-        <div id="file-uploaded-message" class="file-uploaded"></div>
-
-        <div class="counter">
-            <span>Multiple Choice Questions:</span>
-            <div>
-                <button type="button" data-counter="multipleChoice" data-delta="-1" aria-label="Decrease multiple choice questions">−</button>
-                <span id="multiple-choice-counter">0</span>
-                <button type="button" data-counter="multipleChoice" data-delta="1" aria-label="Increase multiple choice questions">+</button>
+        <section class="setup-panel" aria-label="Exam configuration">
+            <div class="panel-header">
+                <h2>Create a Practice Exam</h2>
+                <p>Upload your lecture slides or notes as a PDF, configure your question mix, and get instant AI grading.</p>
             </div>
-        </div>
 
-        <div class="counter">
-            <span>Choices per Multiple Choice Question:</span>
-            <div>
-                <button type="button" data-counter="choicesPerQuestion" data-delta="-1" aria-label="Decrease choices per question">−</button>
-                <span id="choices-per-question-counter">2</span>
-                <button type="button" data-counter="choicesPerQuestion" data-delta="1" aria-label="Increase choices per question">+</button>
-            </div>
-        </div>
+            <!-- Interactive Drag-and-Drop PDF Upload Zone -->
+            <button type="button" id="upload-file-btn" class="dropzone">
+                <span class="dropzone-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
+                </span>
+                <span class="dropzone-title">Drop your PDF here, or <span class="dropzone-link">click to browse</span></span>
+                <span class="dropzone-subtitle">Text-based PDFs • Extracted locally in your browser</span>
+            </button>
 
-        <div class="counter">
-            <span>Short Answer Questions:</span>
-            <div>
-                <button type="button" data-counter="shortAnswer" data-delta="-1" aria-label="Decrease short answer questions">−</button>
-                <span id="short-answer-counter">0</span>
-                <button type="button" data-counter="shortAnswer" data-delta="1" aria-label="Increase short answer questions">+</button>
+            <div id="file-uploaded-message" class="file-uploaded" aria-live="polite"></div>
+
+            <!-- Setup Stepper Controls -->
+            <div class="stepper-list">
+                <div class="counter">
+                    <div class="counter-info">
+                        <span class="counter-label">Multiple Choice Questions</span>
+                        <span class="counter-desc">Graded instantly with answer indicators</span>
+                    </div>
+                    <div class="stepper-control">
+                        <button type="button" data-counter="multipleChoice" data-delta="-1" aria-label="Decrease multiple choice questions">−</button>
+                        <span id="multiple-choice-counter" class="stepper-value">0</span>
+                        <button type="button" data-counter="multipleChoice" data-delta="1" aria-label="Increase multiple choice questions">+</button>
+                    </div>
+                </div>
+
+                <div class="counter">
+                    <div class="counter-info">
+                        <span class="counter-label">Choices per MCQ</span>
+                        <span class="counter-desc">Number of answer options per question</span>
+                    </div>
+                    <div class="stepper-control">
+                        <button type="button" data-counter="choicesPerQuestion" data-delta="-1" aria-label="Decrease choices per question">−</button>
+                        <span id="choices-per-question-counter" class="stepper-value">2</span>
+                        <button type="button" data-counter="choicesPerQuestion" data-delta="1" aria-label="Increase choices per question">+</button>
+                    </div>
+                </div>
+
+                <div class="counter">
+                    <div class="counter-info">
+                        <span class="counter-label">Short Answer Questions</span>
+                        <span class="counter-desc">Marked by AI out of 4 marks with feedback</span>
+                    </div>
+                    <div class="stepper-control">
+                        <button type="button" data-counter="shortAnswer" data-delta="-1" aria-label="Decrease short answer questions">−</button>
+                        <span id="short-answer-counter" class="stepper-value">0</span>
+                        <button type="button" data-counter="shortAnswer" data-delta="1" aria-label="Increase short answer questions">+</button>
+                    </div>
+                </div>
             </div>
-        </div>
+        </section>
 
         <div id="error-message" role="alert"></div>
 
         <form id="questions-form">
             <div id="questions-container"></div>
-            <button id="main-button" type="submit">Generate Questions</button>
-            <button id="new-exam-btn" type="button" class="secondary-btn" hidden>Start New Exam</button>
+            <div class="form-actions">
+                <button id="main-button" type="submit" class="primary-btn">Generate Questions</button>
+                <button id="new-exam-btn" type="button" class="secondary-btn" hidden>Start New Exam</button>
+            </div>
         </form>
     </main>
 
