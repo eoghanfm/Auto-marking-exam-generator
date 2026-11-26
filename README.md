@@ -4,7 +4,7 @@ A web app that turns lecture slides and study notes (PDFs) into customizable pra
 
 🔗 **[Live Demo](https://your-vercel-url.vercel.app)**
 
-![AI Auto-Marking Exam Generator Preview](assets/preview.png)
+<img width="1918" height="908" alt="image" src="https://github.com/user-attachments/assets/76d8937e-18bf-4764-abd4-b2b02d88c1e2" />
 
 ## Features
 - **Client-Side PDF Parsing:** Extracts text directly in the browser using `pdf.js` so files never need to be uploaded to a storage server.
