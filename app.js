@@ -3,6 +3,7 @@
  ***************************************************************/
 const CONFIG = {
     openaiModel: "gpt-4o-mini",
+    proxyEndpoint: "/api/openai",
     openaiEndpoint: "https://api.openai.com/v1/chat/completions",
     pdfWorkerSrc: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js",
     acceptedFileTypes: ".pdf, application/pdf, .eoghanIsTheBest, .iftiIsTheBestToo",
@@ -151,10 +152,10 @@ function saveApiKey() {
 
     if (key) {
         localStorage.setItem(CONFIG.storageKeys.apiKey, key);
-        dom.apiKeyStatus.textContent = "API key saved.";
+        dom.apiKeyStatus.textContent = "Custom API key saved. Requests will call OpenAI directly.";
     } else {
         localStorage.removeItem(CONFIG.storageKeys.apiKey);
-        dom.apiKeyStatus.textContent = "API key cleared.";
+        dom.apiKeyStatus.textContent = "API key cleared. Using default server proxy.";
     }
 }
 
@@ -168,7 +169,7 @@ function systemJSONOnlyPrompt() {
     ].join("\n");
 }
 
-function formatOpenAIError(status, rawBody) {
+function formatOpenAIError(status, rawBody, usingProxy) {
     let apiErrorCode = "";
     let apiErrorMessage = "";
 
@@ -180,15 +181,23 @@ function formatOpenAIError(status, rawBody) {
         // Ignore non-JSON error bodies
     }
 
+    if (usingProxy && (status === 404 || status === 405)) {
+        return "Server proxy (/api/openai) is unavailable here. Run with `vercel dev`, deploy to Vercel, or add your own API key in Settings (⚙️).";
+    }
     if (status === 401) {
-        return "Invalid OpenAI API key. Please check your key in Settings (⚙️).";
+        return usingProxy
+            ? "The server's OpenAI API key is invalid. Please contact the site owner or enter your own key in Settings (⚙️)."
+            : "Invalid OpenAI API key. Please check your key in Settings (⚙️).";
     }
     if (status === 403) {
+        if (usingProxy && apiErrorMessage) {
+            return apiErrorMessage;
+        }
         return `Access denied by OpenAI (403). Make sure your API key can access ${CONFIG.openaiModel}.`;
     }
     if (status === 429) {
         if (apiErrorCode === "insufficient_quota") {
-            return "Your OpenAI account has exceeded its quota. Please check your billing and usage limits.";
+            return "The OpenAI account has exceeded its quota. Please check billing/usage limits or use a different API key in Settings (⚙️).";
         }
         return "OpenAI rate limit reached. Please wait a moment and try again.";
     }
@@ -196,6 +205,9 @@ function formatOpenAIError(status, rawBody) {
         return "This PDF is too long for the model's context limit. Try uploading a shorter document.";
     }
     if (status >= 500) {
+        if (usingProxy && apiErrorMessage) {
+            return apiErrorMessage;
+        }
         return "OpenAI is experiencing a temporary server error. Please try again in a moment.";
     }
 
@@ -205,36 +217,43 @@ function formatOpenAIError(status, rawBody) {
 }
 
 async function callOpenAIJSON(userPrompt, model = CONFIG.openaiModel) {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-        openSettingsSidebar();
-        throw new Error("OpenAI API key is missing. Please add your key in Settings (⚙️).");
+    const customApiKey = getApiKey();
+    const usingProxy = !customApiKey;
+    const endpoint = usingProxy ? CONFIG.proxyEndpoint : CONFIG.openaiEndpoint;
+
+    const headers = { "Content-Type": "application/json" };
+    const messages = [
+        { role: "system", content: systemJSONOnlyPrompt() },
+        { role: "user", content: userPrompt }
+    ];
+    const responseFormat = { type: "json_object" };
+
+    const requestBody = usingProxy
+        ? { messages, response_format: responseFormat }
+        : { model, messages, response_format: responseFormat };
+
+    if (!usingProxy) {
+        headers["Authorization"] = `Bearer ${customApiKey}`;
     }
 
     let response;
     try {
-        response = await fetch(CONFIG.openaiEndpoint, {
+        response = await fetch(endpoint, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model,
-                response_format: { type: "json_object" },
-                messages: [
-                    { role: "system", content: systemJSONOnlyPrompt() },
-                    { role: "user", content: userPrompt }
-                ]
-            })
+            headers,
+            body: JSON.stringify(requestBody)
         });
     } catch {
-        throw new Error("Network error while contacting OpenAI. Please check your internet connection.");
+        throw new Error(
+            usingProxy
+                ? "Could not reach /api/openai. Run with `vercel dev`, deploy to Vercel, or add your own API key in Settings (⚙️)."
+                : "Network error while contacting OpenAI. Please check your internet connection."
+        );
     }
 
     if (!response.ok) {
         const rawBody = await response.text().catch(() => "");
-        throw new Error(formatOpenAIError(response.status, rawBody));
+        throw new Error(formatOpenAIError(response.status, rawBody, usingProxy));
     }
 
     const data = await response.json();
