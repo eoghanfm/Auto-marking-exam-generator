@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Auto-Marking Exam Generator</title>
+
+    <link rel="stylesheet" href="styles.css">
+
+    <script src="https://cdn.jsdelivr.net/npm/js-confetti@latest/dist/js-confetti.browser.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+</head>
+<body>
+    <header class="fixed-header">
+        <h1>AI Auto-Marking Exam Generator</h1>
+        <button type="button" id="open-sidebar-btn" class="open-btn" aria-label="Open saved tests">☰</button>
+        <button type="button" id="open-settings-btn" class="settings-btn" aria-label="Open settings">⚙️</button>
+    </header>
+
+    <div class="overlay" id="sidebar-overlay"></div>
+    <div class="overlay" id="popup-overlay"></div>
+
+    <!-- Saved Tests Drawer -->
+    <aside class="sidebar" id="sidebar" aria-label="Saved Tests">
+        <h3>Saved Tests</h3>
+        <button type="button" class="close-btn" id="close-sidebar-btn" aria-label="Close saved tests">×</button>
+        <div class="sidebar-content" id="sidebar-content"></div>
+    </aside>
+
+    <!-- Settings Drawer -->
+    <aside class="settings-sidebar" id="settings-sidebar" aria-label="Settings">
+        <h3>Settings</h3>
+        <button type="button" class="close-btn" id="close-settings-btn" aria-label="Close settings">×</button>
+        <div class="settings-sidebar-content">
+            <div class="settings-group">
+                <label for="api-key-input">OpenAI API Key:</label>
+                <input type="password" id="api-key-input" placeholder="sk-..." autocomplete="off">
+                <button type="button" id="save-api-key-btn">Save Key</button>
+                <div id="api-key-status" class="settings-status"></div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Save Name Popup -->
+    <div class="popup" id="save-popup" role="dialog" aria-modal="true" aria-labelledby="save-popup-title">
+        <button type="button" class="close-btn" id="close-popup-btn" aria-label="Close save dialog">×</button>
+        <h3 id="save-popup-title">Name this save:</h3>
+        <input type="text" id="name-input" placeholder="Enter name">
+        <button type="button" id="submit-name-btn">Submit</button>
+    </div>
+
+    <!-- Main Container -->
+    <main class="container">
+        <button type="button" id="upload-file-btn">Upload PDF</button>
+        <div id="file-uploaded-message" class="file-uploaded"></div>
+
+        <div class="counter">
+            <span>Multiple Choice Questions:</span>
+            <div>
+                <button type="button" data-counter="multipleChoice" data-delta="-1" aria-label="Decrease multiple choice questions">−</button>
+                <span id="multiple-choice-counter">0</span>
+                <button type="button" data-counter="multipleChoice" data-delta="1" aria-label="Increase multiple choice questions">+</button>
+            </div>
+        </div>
+
+        <div class="counter">
+            <span>Choices per Multiple Choice Question:</span>
+            <div>
+                <button type="button" data-counter="choicesPerQuestion" data-delta="-1" aria-label="Decrease choices per question">−</button>
+                <span id="choices-per-question-counter">2</span>
+                <button type="button" data-counter="choicesPerQuestion" data-delta="1" aria-label="Increase choices per question">+</button>
+            </div>
+        </div>
+
+        <div class="counter">
+            <span>Short Answer Questions:</span>
+            <div>
+                <button type="button" data-counter="shortAnswer" data-delta="-1" aria-label="Decrease short answer questions">−</button>
+                <span id="short-answer-counter">0</span>
+                <button type="button" data-counter="shortAnswer" data-delta="1" aria-label="Increase short answer questions">+</button>
+            </div>
+        </div>
+
+        <div id="error-message" role="alert"></div>
+
+        <form id="questions-form">
+            <div id="questions-container"></div>
+            <button id="main-button" type="submit">Generate Questions</button>
+        </form>
+    </main>
+
+    <script src="app.js"></script>
+</body>
+</html>

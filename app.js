@@ -1,59 +1,29 @@
 /***************************************************************
- *  APP OVERVIEW
- *
- *  state.mode:
- *      "setup"  -> user can upload PDF + choose counts -> Generate
- *      "taking" -> questions shown -> Submit Answers (mark)
- *      "marked" -> results shown -> Save (popup)
- *
- *  state.test.questions:
- *      mcq: [{ id, prompt, choices[], answerIndex }]
- *      saq: [{ id, prompt, maxScore }]
- *
- *  state.test.answers:
- *      mcqSelectedIndex[] (number|null)
- *      saqText[] (string)
- *
- *  state.test.marking:
- *      totals + per-question marking
+ * 1. STATE & CONFIG
  ***************************************************************/
-
-/***************************************************************
- *  CONFIG: API & PDF.JS
- ***************************************************************/
-const API_KEY_STORAGE_KEY = "__OPENAI_API_KEY__";
-const defaultApiKey = "";
-const modelForGeneration = "gpt-4o-mini";
-const modelForSAQMarking = "gpt-4o-mini";
+const CONFIG = {
+    openaiModel: "gpt-4o-mini",
+    openaiEndpoint: "https://api.openai.com/v1/chat/completions",
+    pdfWorkerSrc: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js",
+    acceptedFileTypes: ".pdf, application/pdf, .eoghanIsTheBest, .iftiIsTheBestToo",
+    storageKeys: {
+        apiKey: "__OPENAI_API_KEY__",
+        savesIndex: "__SAVED_TESTS_INDEX_V1__",
+        testPrefix: "saved_test_v2_"
+    }
+};
 
 if (typeof pdfjsLib !== "undefined") {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js";
+    pdfjsLib.GlobalWorkerOptions.workerSrc = CONFIG.pdfWorkerSrc;
 }
 
-let jsConfettiInstance = null;
-
-function getApiKey() {
-    return (localStorage.getItem(API_KEY_STORAGE_KEY) || defaultApiKey).trim();
-}
-
-function saveApiKey() {
-    const input = document.getElementById("apiKeyInput");
-    const status = document.getElementById("apiKeyStatus");
-    const key = input.value.trim();
-
-    if (key) {
-        localStorage.setItem(API_KEY_STORAGE_KEY, key);
-        status.textContent = "API key saved.";
-    } else {
-        localStorage.removeItem(API_KEY_STORAGE_KEY);
-        status.textContent = "API key cleared.";
-    }
-}
-
-/***************************************************************
- *  GLOBAL STATE
- ***************************************************************/
+/**
+ * Application state:
+ * - mode: "setup" | "taking" | "marked"
+ * - test.questions: { mcq: [{ id, prompt, choices[], answerIndex }], saq: [{ id, prompt, maxScore }] }
+ * - test.answers:   { mcqSelectedIndex: (number|null)[], saqText: string[] }
+ * - test.marking:   { status, totals, mcq[], saq[], modelInfo } | null
+ */
 const state = {
     mode: "setup",
     config: {
@@ -67,61 +37,69 @@ const state = {
         extractedText: ""
     },
     test: {
-        questions: {
-            mcq: [],
-            saq: []
-        },
-        answers: {
-            mcqSelectedIndex: [],
-            saqText: []
-        },
+        questions: { mcq: [], saq: [] },
+        answers: { mcqSelectedIndex: [], saqText: [] },
         marking: null
     }
 };
 
+let jsConfettiInstance = null;
+
+const dom = {
+    openSidebarBtn: document.getElementById("open-sidebar-btn"),
+    openSettingsBtn: document.getElementById("open-settings-btn"),
+    closeSidebarBtn: document.getElementById("close-sidebar-btn"),
+    closeSettingsBtn: document.getElementById("close-settings-btn"),
+    sidebarOverlay: document.getElementById("sidebar-overlay"),
+    popupOverlay: document.getElementById("popup-overlay"),
+    sidebar: document.getElementById("sidebar"),
+    sidebarContent: document.getElementById("sidebar-content"),
+    settingsSidebar: document.getElementById("settings-sidebar"),
+    apiKeyInput: document.getElementById("api-key-input"),
+    saveApiKeyBtn: document.getElementById("save-api-key-btn"),
+    apiKeyStatus: document.getElementById("api-key-status"),
+    savePopup: document.getElementById("save-popup"),
+    closePopupBtn: document.getElementById("close-popup-btn"),
+    nameInput: document.getElementById("name-input"),
+    submitNameBtn: document.getElementById("submit-name-btn"),
+    uploadFileBtn: document.getElementById("upload-file-btn"),
+    fileUploadedMessage: document.getElementById("file-uploaded-message"),
+    mcqCounter: document.getElementById("multiple-choice-counter"),
+    choicesCounter: document.getElementById("choices-per-question-counter"),
+    saqCounter: document.getElementById("short-answer-counter"),
+    errorMessage: document.getElementById("error-message"),
+    questionsForm: document.getElementById("questions-form"),
+    questionsContainer: document.getElementById("questions-container"),
+    mainButton: document.getElementById("main-button")
+};
+
 /***************************************************************
- *  UI HELPERS
+ * 2. PDF EXTRACTION
  ***************************************************************/
-function showError(message) {
-    const el = document.getElementById("error-message");
-    el.textContent = message;
-    el.style.display = "block";
-}
-
-function hideError() {
-    document.getElementById("error-message").style.display = "none";
-}
-
-function syncCountersToUI() {
-    document.getElementById("multiple-choice-counter").innerText = state.config.mcqCount;
-    document.getElementById("choices-per-question-counter").innerText = state.config.choicesPerQuestion;
-    document.getElementById("short-answer-counter").innerText = state.config.saqCount;
-}
-
-// Updates counters + rules
-function updateCounter(type, change) {
-    if (type === "multipleChoice") {
-        state.config.mcqCount = Math.max(0, state.config.mcqCount + change);
-    } else if (type === "choicesPerQuestion") {
-        state.config.choicesPerQuestion = Math.max(2, state.config.choicesPerQuestion + change);
-    } else if (type === "shortAnswer") {
-        state.config.saqCount = Math.max(0, state.config.saqCount + change);
+async function extractTextFromPDF(file) {
+    if (typeof pdfjsLib === "undefined") {
+        throw new Error("PDF.js failed to load. Please check your internet connection and refresh.");
     }
 
-    syncCountersToUI();
-    hideError();
-}
+    const arrayBuffer = await file.arrayBuffer();
+    const typedArray = new Uint8Array(arrayBuffer);
+    const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
 
-/***************************************************************
- *  PDF UPLOAD + TEXT EXTRACTION
- ***************************************************************/
-let fileUploaded = false;
-let uploadedFile = null;
+    let extracted = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const textContent = await page.getTextContent();
+        const pageText = textContent.items.map(item => item.str).join(" ");
+        extracted += `${pageText}\n`;
+    }
+
+    return extracted.trim();
+}
 
 function handleFileUpload() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "application/pdf, .eoghanIsTheBest, .iftiIsTheBestToo";
+    input.accept = CONFIG.acceptedFileTypes;
 
     input.onchange = async () => {
         const file = input.files[0];
@@ -129,49 +107,31 @@ function handleFileUpload() {
             return;
         }
 
-        const statusEl = document.getElementById("file-uploaded-message");
         hideError();
-        statusEl.textContent = "Reading PDF...";
-        fileUploaded = false;
+        dom.fileUploadedMessage.textContent = "Reading PDF...";
+        state.pdf.name = null;
+        state.pdf.extractedText = "";
 
         try {
-            const arrayBuffer = await file.arrayBuffer();
-            const typedArray = new Uint8Array(arrayBuffer);
-            const pdf = await pdfjsLib.getDocument({ data: typedArray }).promise;
-
-            let extracted = "";
-            for (let i = 1; i <= pdf.numPages; i++) {
-                const page = await pdf.getPage(i);
-                const textContent = await page.getTextContent();
-                const pageText = textContent.items.map(item => item.str).join(" ");
-                extracted += pageText + "\n";
+            const extractedText = await extractTextFromPDF(file);
+            if (!extractedText) {
+                throw new Error("Could not extract any text from this PDF. Scanned image-only PDFs are not supported.");
             }
 
-            if (!extracted.trim()) {
-                throw new Error("Could not extract any text from this PDF.");
-            }
-
-            fileUploaded = true;
-            uploadedFile = file;
             state.pdf.name = file.name;
-            state.pdf.extractedText = extracted;
+            state.pdf.extractedText = extractedText;
 
-            // Reset to setup mode so a new test can be generated from the newly uploaded PDF
+            // Reset to setup mode so a new test can be generated from this PDF
             state.mode = "setup";
             state.test.questions = { mcq: [], saq: [] };
             state.test.answers = { mcqSelectedIndex: [], saqText: [] };
             state.test.marking = null;
             renderQuestions();
 
-            statusEl.textContent = `✔ File uploaded successfully: ${file.name}`;
-            console.log("Extracted PDF Text length:", extracted.length);
+            dom.fileUploadedMessage.textContent = `✔ Uploaded: ${file.name}`;
         } catch (err) {
-            console.error("PDF read error:", err);
-            fileUploaded = false;
-            uploadedFile = null;
-            state.pdf.name = null;
-            state.pdf.extractedText = "";
-            statusEl.textContent = "";
+            console.error("PDF extraction failed:", err);
+            dom.fileUploadedMessage.textContent = "";
             showError(err.message || "Failed to read PDF file. Please upload a valid PDF.");
         }
     };
@@ -180,8 +140,24 @@ function handleFileUpload() {
 }
 
 /***************************************************************
- *  OPENAI HELPERS (STATELESS)
+ * 3. OPENAI API
  ***************************************************************/
+function getApiKey() {
+    return (localStorage.getItem(CONFIG.storageKeys.apiKey) || "").trim();
+}
+
+function saveApiKey() {
+    const key = dom.apiKeyInput.value.trim();
+
+    if (key) {
+        localStorage.setItem(CONFIG.storageKeys.apiKey, key);
+        dom.apiKeyStatus.textContent = "API key saved.";
+    } else {
+        localStorage.removeItem(CONFIG.storageKeys.apiKey);
+        dom.apiKeyStatus.textContent = "API key cleared.";
+    }
+}
+
 function systemJSONOnlyPrompt() {
     return [
         "You are an academic assessment generator and marker.",
@@ -192,33 +168,73 @@ function systemJSONOnlyPrompt() {
     ].join("\n");
 }
 
-// Returns parsed JSON response from OpenAI
-async function callOpenAIJSON(model, userPrompt) {
+function formatOpenAIError(status, rawBody) {
+    let apiErrorCode = "";
+    let apiErrorMessage = "";
+
+    try {
+        const parsed = JSON.parse(rawBody);
+        apiErrorCode = parsed?.error?.code || "";
+        apiErrorMessage = parsed?.error?.message || "";
+    } catch {
+        // Ignore non-JSON error bodies
+    }
+
+    if (status === 401) {
+        return "Invalid OpenAI API key. Please check your key in Settings (⚙️).";
+    }
+    if (status === 403) {
+        return `Access denied by OpenAI (403). Make sure your API key can access ${CONFIG.openaiModel}.`;
+    }
+    if (status === 429) {
+        if (apiErrorCode === "insufficient_quota") {
+            return "Your OpenAI account has exceeded its quota. Please check your billing and usage limits.";
+        }
+        return "OpenAI rate limit reached. Please wait a moment and try again.";
+    }
+    if (status === 400 && apiErrorCode === "context_length_exceeded") {
+        return "This PDF is too long for the model's context limit. Try uploading a shorter document.";
+    }
+    if (status >= 500) {
+        return "OpenAI is experiencing a temporary server error. Please try again in a moment.";
+    }
+
+    return apiErrorMessage
+        ? `OpenAI API error (${status}): ${apiErrorMessage}`
+        : `OpenAI API request failed (HTTP ${status}).`;
+}
+
+async function callOpenAIJSON(userPrompt, model = CONFIG.openaiModel) {
     const apiKey = getApiKey();
     if (!apiKey) {
         openSettingsSidebar();
-        throw new Error("OpenAI API key is missing. Please enter it in Settings (⚙️).");
+        throw new Error("OpenAI API key is missing. Please add your key in Settings (⚙️).");
     }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: model,
-            response_format: { type: "json_object" },
-            messages: [
-                { role: "system", content: systemJSONOnlyPrompt() },
-                { role: "user", content: userPrompt }
-            ]
-        })
-    });
+    let response;
+    try {
+        response = await fetch(CONFIG.openaiEndpoint, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+            },
+            body: JSON.stringify({
+                model,
+                response_format: { type: "json_object" },
+                messages: [
+                    { role: "system", content: systemJSONOnlyPrompt() },
+                    { role: "user", content: userPrompt }
+                ]
+            })
+        });
+    } catch {
+        throw new Error("Network error while contacting OpenAI. Please check your internet connection.");
+    }
 
     if (!response.ok) {
-        const txt = await response.text().catch(() => "");
-        throw new Error(`OpenAI HTTP ${response.status}: ${txt.slice(0, 300)}`);
+        const rawBody = await response.text().catch(() => "");
+        throw new Error(formatOpenAIError(response.status, rawBody));
     }
 
     const data = await response.json();
@@ -226,15 +242,23 @@ async function callOpenAIJSON(model, userPrompt) {
 
     try {
         return JSON.parse(content);
-    } catch (e) {
-        console.error("Raw model output (not JSON):", content);
-        throw new Error("Model did not return valid JSON.");
+    } catch {
+        console.error("Raw model output (invalid JSON):", content);
+        throw new Error("The AI returned an unexpected response format. Please try again.");
     }
 }
 
 /***************************************************************
- *  JSON PROMPTS
+ * 4. TEST GENERATION & MARKING
  ***************************************************************/
+function clampInt(value, min, max) {
+    const n = parseInt(value, 10);
+    if (Number.isNaN(n)) {
+        return min;
+    }
+    return Math.max(min, Math.min(max, n));
+}
+
 function buildGenerationPrompt(extractedText, config) {
     return `
 Using the lecture content below, generate exam questions.
@@ -264,7 +288,7 @@ RETURN JSON IN THIS EXACT FORMAT:
 "saq": [
 {
   "prompt": "Question text",
-  "maxScore": 4
+  "maxScore": ${config.saqMaxScore}
 }
 ]
 }
@@ -294,60 +318,280 @@ RETURN JSON IN THIS EXACT FORMAT:
 `.trim();
 }
 
-/***************************************************************
- *  GENERATE QUESTIONS (JSON)
- ***************************************************************/
 async function generateQuestionsFromPDF() {
-    if (!fileUploaded || !state.pdf.extractedText) {
-        throw new Error("No PDF text available. Upload a PDF first.");
+    if (!state.pdf.extractedText) {
+        throw new Error("No PDF text available. Please upload a PDF first.");
     }
 
     const prompt = buildGenerationPrompt(state.pdf.extractedText, state.config);
-    const result = await callOpenAIJSON(modelForGeneration, prompt);
+    const result = await callOpenAIJSON(prompt);
 
     if (!result || !Array.isArray(result.mcq) || !Array.isArray(result.saq)) {
-        throw new Error("Generation JSON is missing mcq/saq arrays.");
+        throw new Error("Generated response is missing question lists. Please try again.");
     }
 
-    // Optional: basic shape validation
     if (result.mcq.length !== state.config.mcqCount || result.saq.length !== state.config.saqCount) {
-        console.warn("Model returned different counts than requested.", result);
+        console.warn("Model returned different question counts than requested.", result);
     }
 
-    // Assign IDs + normalize
-    const mcq = result.mcq.map((q, i) => ({
-        id: `mcq-${i + 1}`,
-        prompt: String(q.prompt ?? ""),
-        choices: Array.isArray(q.choices) ? q.choices.map(String) : [],
-        answerIndex: Number.isInteger(q.answerIndex) ? q.answerIndex : 0
-    }));
+    const mcq = result.mcq.map((q, i) => {
+        const choices = Array.isArray(q.choices) ? q.choices.map(String) : [];
+        return {
+            id: `mcq-${i + 1}`,
+            prompt: String(q.prompt ?? ""),
+            choices,
+            answerIndex: clampInt(q.answerIndex, 0, Math.max(0, choices.length - 1))
+        };
+    });
 
     const saq = result.saq.map((q, i) => ({
         id: `saq-${i + 1}`,
         prompt: String(q.prompt ?? ""),
-        maxScore: Number.isInteger(q.maxScore) ? q.maxScore : state.config.saqMaxScore
+        maxScore: Number.isInteger(q.maxScore) && q.maxScore > 0 ? q.maxScore : state.config.saqMaxScore
     }));
 
-    state.test.questions.mcq = mcq;
-    state.test.questions.saq = saq;
-
-    // Reset answers arrays to correct lengths
-    state.test.answers.mcqSelectedIndex = new Array(mcq.length).fill(null);
-    state.test.answers.saqText = new Array(saq.length).fill("");
-
-    // Clear old marking
+    state.test.questions = { mcq, saq };
+    state.test.answers = {
+        mcqSelectedIndex: new Array(mcq.length).fill(null),
+        saqText: new Array(saq.length).fill("")
+    };
     state.test.marking = null;
     state.mode = "taking";
 }
 
-/***************************************************************
- *  RENDER QUESTIONS FROM STATE
- ***************************************************************/
-// Builds the questions section of the UI
-function renderQuestions() {
-    const container = document.getElementById("questions-container");
-    container.innerHTML = "";
+function collectAnswersIntoState() {
+    for (let i = 0; i < state.test.questions.mcq.length; i++) {
+        const selected = document.querySelector(`input[name="q${i + 1}"]:checked`);
+        state.test.answers.mcqSelectedIndex[i] = selected ? parseInt(selected.value, 10) : null;
+    }
 
+    const saqTextareas = dom.questionsContainer.querySelectorAll('.question[data-qtype="saq"] textarea');
+    saqTextareas.forEach((textarea, i) => {
+        state.test.answers.saqText[i] = (textarea.value || "").trim();
+    });
+}
+
+async function markTest() {
+    collectAnswersIntoState();
+
+    // Mark MCQs locally
+    const mcqMarking = state.test.questions.mcq.map((q, i) => {
+        const selectedIndex = state.test.answers.mcqSelectedIndex[i];
+        const correctIndex = q.answerIndex;
+        return {
+            selectedIndex,
+            correctIndex,
+            isCorrect: selectedIndex !== null && selectedIndex === correctIndex
+        };
+    });
+
+    const mcqScore = mcqMarking.reduce((sum, m) => sum + (m.isCorrect ? 1 : 0), 0);
+    const mcqMax = state.test.questions.mcq.length;
+
+    // Mark SAQs via OpenAI in a single batch
+    const saqItems = state.test.questions.saq.map((q, i) => ({
+        question: q.prompt,
+        answer: state.test.answers.saqText[i] || ""
+    }));
+
+    let saqResults = [];
+    if (saqItems.length > 0) {
+        const prompt = buildSAQMarkingPrompt(saqItems, state.config.saqMaxScore);
+        const result = await callOpenAIJSON(prompt);
+
+        if (!result || !Array.isArray(result.results) || result.results.length !== saqItems.length) {
+            throw new Error("Short-answer marking response was invalid. Please try submitting again.");
+        }
+
+        saqResults = result.results.map((r, i) => ({
+            score: clampInt(r.score, 0, state.test.questions.saq[i].maxScore),
+            maxScore: state.test.questions.saq[i].maxScore,
+            feedback: String(r.feedback ?? "")
+        }));
+    }
+
+    const saqScore = saqResults.reduce((sum, r) => sum + r.score, 0);
+    const saqMax = state.test.questions.saq.reduce((sum, q) => sum + (q.maxScore || state.config.saqMaxScore), 0);
+
+    state.test.marking = {
+        status: "marked",
+        totals: {
+            mcqScore,
+            mcqMax,
+            saqScore,
+            saqMax,
+            totalScore: mcqScore + saqScore,
+            totalMax: mcqMax + saqMax
+        },
+        mcq: mcqMarking,
+        saq: saqResults,
+        modelInfo: {
+            model: CONFIG.openaiModel,
+            markedAt: new Date().toISOString()
+        }
+    };
+
+    state.mode = "marked";
+}
+
+/***************************************************************
+ * 5. LOCALSTORAGE PERSISTENCE
+ ***************************************************************/
+function makeTestKey(id) {
+    return `${CONFIG.storageKeys.testPrefix}${id}`;
+}
+
+function loadSavesIndex() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(CONFIG.storageKeys.savesIndex) || "[]");
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function storeSavesIndex(index) {
+    localStorage.setItem(CONFIG.storageKeys.savesIndex, JSON.stringify(index));
+}
+
+function buildSavedTestObject(name) {
+    const now = new Date().toISOString();
+
+    return {
+        version: 1,
+        meta: {
+            id: String(Date.now()),
+            name: (name || "Untitled").trim() || "Untitled",
+            createdAt: now,
+            updatedAt: now,
+            pdfName: state.pdf.name
+        },
+        config: { ...state.config },
+        questions: state.test.questions,
+        answers: state.test.answers,
+        marking: state.test.marking
+    };
+}
+
+function saveTestObject(testObj) {
+    localStorage.setItem(makeTestKey(testObj.meta.id), JSON.stringify(testObj));
+
+    const index = loadSavesIndex();
+    index.unshift({
+        id: testObj.meta.id,
+        name: testObj.meta.name,
+        createdAt: testObj.meta.createdAt
+    });
+    storeSavesIndex(index);
+}
+
+function loadTestById(id) {
+    const raw = localStorage.getItem(makeTestKey(id));
+    if (!raw) {
+        return null;
+    }
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function deleteTestById(id) {
+    localStorage.removeItem(makeTestKey(id));
+    const updatedIndex = loadSavesIndex().filter(item => item.id !== id);
+    storeSavesIndex(updatedIndex);
+}
+
+function saveCurrentTest(name) {
+    try {
+        const testObj = buildSavedTestObject(name);
+        saveTestObject(testObj);
+        renderSavedTestsList();
+        dom.mainButton.textContent = "Saved!";
+    } catch (err) {
+        console.error("Save failed:", err);
+        showError("Could not save test. Browser storage may be full.");
+    }
+}
+
+function loadSavedTest(id) {
+    const saved = loadTestById(id);
+    if (!saved) {
+        showError("Could not load the selected saved test.");
+        return;
+    }
+
+    state.config.mcqCount = saved.config?.mcqCount ?? 0;
+    state.config.choicesPerQuestion = saved.config?.choicesPerQuestion ?? 2;
+    state.config.saqCount = saved.config?.saqCount ?? 0;
+    state.config.saqMaxScore = saved.config?.saqMaxScore ?? 4;
+    syncCountersToUI();
+
+    state.pdf.name = saved.meta?.pdfName ?? null;
+    state.test.questions = saved.questions ?? { mcq: [], saq: [] };
+    state.test.answers = saved.answers ?? { mcqSelectedIndex: [], saqText: [] };
+    state.test.marking = saved.marking ?? null;
+    state.mode = state.test.marking?.status === "marked" ? "marked" : "taking";
+
+    hideError();
+    renderQuestions();
+    applyMarkingToUI();
+    closeAllSidebars();
+}
+
+/***************************************************************
+ * 6. UI & EVENT LISTENERS
+ ***************************************************************/
+function escapeHTML(str) {
+    return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function showError(message) {
+    dom.errorMessage.textContent = message;
+    dom.errorMessage.style.display = "block";
+}
+
+function hideError() {
+    dom.errorMessage.style.display = "none";
+}
+
+function syncCountersToUI() {
+    dom.mcqCounter.textContent = state.config.mcqCount;
+    dom.choicesCounter.textContent = state.config.choicesPerQuestion;
+    dom.saqCounter.textContent = state.config.saqCount;
+}
+
+function updateCounter(type, delta) {
+    if (type === "multipleChoice") {
+        state.config.mcqCount = Math.max(0, state.config.mcqCount + delta);
+    } else if (type === "choicesPerQuestion") {
+        state.config.choicesPerQuestion = Math.max(2, state.config.choicesPerQuestion + delta);
+    } else if (type === "shortAnswer") {
+        state.config.saqCount = Math.max(0, state.config.saqCount + delta);
+    }
+
+    syncCountersToUI();
+    hideError();
+}
+
+function updateMainButtonText() {
+    if (state.mode === "setup") {
+        dom.mainButton.textContent = "Generate Questions";
+    } else if (state.mode === "taking") {
+        dom.mainButton.textContent = "Submit Answers";
+    } else if (state.mode === "marked") {
+        dom.mainButton.textContent = "Save";
+    }
+}
+
+function renderQuestions() {
+    dom.questionsContainer.innerHTML = "";
     const isMarked = state.mode === "marked";
 
     const mcqSection = document.createElement("div");
@@ -370,16 +614,14 @@ function renderQuestions() {
         saqSection.appendChild(saqHeading);
     }
 
-    container.appendChild(mcqSection);
-    container.appendChild(saqSection);
+    dom.questionsContainer.appendChild(mcqSection);
+    dom.questionsContainer.appendChild(saqSection);
 
-    // MCQs
     state.test.questions.mcq.forEach((q, i) => {
         let html = `<div class="question" data-qtype="mcq" data-index="${i}">
                         <p><strong>${i + 1}) ${escapeHTML(q.prompt)}</strong></p>`;
 
         q.choices.forEach((choice, cIndex) => {
-            // Value is index (reliable), not text
             const checked = state.test.answers.mcqSelectedIndex[i] === cIndex ? "checked" : "";
             const disabled = isMarked ? "disabled" : "";
             html += `<label>
@@ -392,13 +634,12 @@ function renderQuestions() {
         mcqSection.insertAdjacentHTML("beforeend", html);
     });
 
-    // SAQs
     state.test.questions.saq.forEach((q, i) => {
-        const number = state.test.questions.mcq.length + i + 1;
+        const questionNumber = state.test.questions.mcq.length + i + 1;
         const existingText = state.test.answers.saqText[i] ?? "";
         const readonly = isMarked ? "readonly" : "";
         const html = `<div class="question" data-qtype="saq" data-index="${i}">
-                        <p><strong>${number}) ${escapeHTML(q.prompt)}</strong></p>
+                        <p><strong>${questionNumber}) ${escapeHTML(q.prompt)}</strong></p>
                         <textarea ${readonly}>${escapeHTML(existingText)}</textarea>
                     </div>`;
         saqSection.insertAdjacentHTML("beforeend", html);
@@ -407,169 +648,40 @@ function renderQuestions() {
     updateMainButtonText();
 }
 
-function updateMainButtonText() {
-    const mainButton = document.getElementById("mainButton");
-    if (state.mode === "setup") {
-        mainButton.innerText = "Generate Questions";
-    } else if (state.mode === "taking") {
-        mainButton.innerText = "Submit Answers";
-    } else if (state.mode === "marked") {
-        mainButton.innerText = "Save";
-    }
-}
-
-// Simple HTML escape to avoid breaking markup when inserting text
-function escapeHTML(str) {
-    return String(str)
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll('"', "&quot;")
-        .replaceAll("'", "&#039;");
-}
-
-/***************************************************************
- *  COLLECT ANSWERS FROM UI INTO STATE
- ***************************************************************/
-function collectAnswersIntoState() {
-    // MCQ indices
-    for (let i = 0; i < state.test.questions.mcq.length; i++) {
-        const selected = document.querySelector(`input[name="q${i + 1}"]:checked`);
-        if (!selected) {
-            state.test.answers.mcqSelectedIndex[i] = null;
-        } else {
-            state.test.answers.mcqSelectedIndex[i] = parseInt(selected.value, 10);
-        }
-    }
-
-    // SAQ textareas: only those under questions-container
-    const saqTextareas = document.querySelectorAll('#questions-container .question[data-qtype="saq"] textarea');
-    saqTextareas.forEach((ta, i) => {
-        state.test.answers.saqText[i] = (ta.value || "").trim();
-    });
-}
-
-/***************************************************************
- *  MARKING
- *  - MCQ marked locally
- *  - SAQ marked via OpenAI JSON (batch)
- ***************************************************************/
-async function markTest() {
-    collectAnswersIntoState();
-
-    // Mark MCQ locally
-    const mcqMarking = state.test.questions.mcq.map((q, i) => {
-        const selectedIndex = state.test.answers.mcqSelectedIndex[i];
-        const correctIndex = q.answerIndex;
-        const isCorrect = (selectedIndex !== null && selectedIndex === correctIndex);
-
-        return {
-            selectedIndex: selectedIndex,
-            correctIndex: correctIndex,
-            isCorrect: isCorrect
-        };
-    });
-
-    const mcqScore = mcqMarking.reduce((sum, m) => sum + (m.isCorrect ? 1 : 0), 0);
-    const mcqMax = state.test.questions.mcq.length;
-
-    // Mark SAQ via AI (batch)
-    const saqItems = state.test.questions.saq.map((q, i) => ({
-        question: q.prompt,
-        answer: state.test.answers.saqText[i] || ""
-    }));
-
-    let saqResults = [];
-    if (saqItems.length > 0) {
-        const prompt = buildSAQMarkingPrompt(saqItems, state.config.saqMaxScore);
-        const result = await callOpenAIJSON(modelForSAQMarking, prompt);
-
-        if (!result || !Array.isArray(result.results) || result.results.length !== saqItems.length) {
-            throw new Error("SAQ marking JSON invalid or wrong length.");
-        }
-
-        // Normalize
-        saqResults = result.results.map((r, i) => ({
-            score: clampInt(r.score, 0, state.test.questions.saq[i].maxScore),
-            maxScore: state.test.questions.saq[i].maxScore,
-            feedback: String(r.feedback ?? "")
-        }));
-    }
-
-    const saqScore = saqResults.reduce((sum, r) => sum + r.score, 0);
-    const saqMax = state.test.questions.saq.reduce((sum, q) => sum + (q.maxScore || state.config.saqMaxScore), 0);
-
-    state.test.marking = {
-        status: "marked",
-        totals: {
-            mcqScore: mcqScore,
-            mcqMax: mcqMax,
-            saqScore: saqScore,
-            saqMax: saqMax,
-            totalScore: mcqScore + saqScore,
-            totalMax: mcqMax + saqMax
-        },
-        mcq: mcqMarking,
-        saq: saqResults,
-        modelInfo: {
-            model: modelForSAQMarking,
-            markedAt: new Date().toISOString()
-        }
-    };
-
-    state.mode = "marked";
-}
-
-function clampInt(value, min, max) {
-    const n = parseInt(value, 10);
-    if (Number.isNaN(n)) {
-        return min;
-    }
-    return Math.max(min, Math.min(max, n));
-}
-
-/***************************************************************
- *  APPLY MARKING TO UI (used after marking AND after loading saved marked tests)
- ***************************************************************/
 function applyMarkingToUI() {
     if (!state.test.marking || state.test.marking.status !== "marked") {
         return;
     }
 
-    // Update headings with scores (only if that section has questions)
+    const { totals } = state.test.marking;
     const mcqHeading = document.getElementById("mcq-heading");
     const saqHeading = document.getElementById("saq-heading");
 
-    if (mcqHeading && state.test.marking.totals.mcqMax > 0) {
-        mcqHeading.textContent = `Multiple Choice Questions - Score: ${state.test.marking.totals.mcqScore}/${state.test.marking.totals.mcqMax}`;
+    if (mcqHeading && totals.mcqMax > 0) {
+        mcqHeading.textContent = `Multiple Choice Questions - Score: ${totals.mcqScore}/${totals.mcqMax}`;
     }
-    if (saqHeading && state.test.marking.totals.saqMax > 0) {
-        saqHeading.textContent = `Short Answer Questions - Score: ${state.test.marking.totals.saqScore}/${state.test.marking.totals.saqMax}`;
+    if (saqHeading && totals.saqMax > 0) {
+        saqHeading.textContent = `Short Answer Questions - Score: ${totals.saqScore}/${totals.saqMax}`;
     }
 
-    // MCQ ticks and per-question 1/1 / 0/1
-    const mcqDivs = document.querySelectorAll('#questions-container .question[data-qtype="mcq"]');
+    const mcqDivs = dom.questionsContainer.querySelectorAll('.question[data-qtype="mcq"]');
     mcqDivs.forEach((div, i) => {
         const marking = state.test.marking.mcq[i];
         if (!marking) {
             return;
         }
 
-        const p = div.querySelector("p");
-        if (p) {
-            // Remove any old appended spans
-            p.querySelectorAll("span").forEach(s => s.remove());
-
+        const promptPara = div.querySelector("p");
+        if (promptPara) {
+            promptPara.querySelectorAll("span").forEach(span => span.remove());
             const scoreSpan = document.createElement("span");
-            scoreSpan.innerText = marking.isCorrect ? " 1/1" : " 0/1";
-            p.appendChild(scoreSpan);
+            scoreSpan.textContent = marking.isCorrect ? " 1/1" : " 0/1";
+            promptPara.appendChild(scoreSpan);
         }
 
-        // Add ticks to labels
         const labels = div.querySelectorAll("label");
         labels.forEach((label, cIndex) => {
-            // Remove old tick spans if they exist
-            label.querySelectorAll(".correct-tick, .incorrect-tick").forEach(s => s.remove());
+            label.querySelectorAll(".correct-tick, .incorrect-tick").forEach(span => span.remove());
 
             if (cIndex === marking.correctIndex) {
                 const correctSpan = document.createElement("span");
@@ -587,10 +699,8 @@ function applyMarkingToUI() {
         });
     });
 
-    // SAQ feedback paragraphs
-    const saqDivs = document.querySelectorAll('#questions-container .question[data-qtype="saq"]');
+    const saqDivs = dom.questionsContainer.querySelectorAll('.question[data-qtype="saq"]');
     saqDivs.forEach((div, i) => {
-        // Remove old feedback paragraphs we might have appended
         div.querySelectorAll("p[data-feedback='1']").forEach(p => p.remove());
 
         const res = state.test.marking.saq[i];
@@ -604,237 +714,105 @@ function applyMarkingToUI() {
         div.appendChild(feedbackPara);
     });
 
-    // Update button
-    document.getElementById("mainButton").innerText = "Save";
+    updateMainButtonText();
 }
 
-/***************************************************************
- *  SAVE SYSTEM (MULTIPLE SAVES, DATA-ONLY)
- ***************************************************************/
-const SAVES_INDEX_KEY = "__SAVED_TESTS_INDEX_V1__";
-const TEST_KEY_PREFIX = "saved_test_v2_";
-
-function makeTestKey(id) {
-    return `${TEST_KEY_PREFIX}${id}`;
-}
-
-function loadSavesIndex() {
-    try {
-        return JSON.parse(localStorage.getItem(SAVES_INDEX_KEY) || "[]");
-    } catch {
-        return [];
-    }
-}
-
-function storeSavesIndex(index) {
-    localStorage.setItem(SAVES_INDEX_KEY, JSON.stringify(index));
-}
-
-function buildSavedTestObject(name) {
-    const now = new Date().toISOString();
-
-    return {
-        version: 1,
-        meta: {
-            id: String(Date.now()),
-            name: (name || "Untitled").trim() || "Untitled",
-            createdAt: now,
-            updatedAt: now,
-            pdfName: state.pdf.name
-        },
-        config: {
-            mcqCount: state.config.mcqCount,
-            choicesPerQuestion: state.config.choicesPerQuestion,
-            saqCount: state.config.saqCount,
-            saqMaxScore: state.config.saqMaxScore
-        },
-        questions: state.test.questions,
-        answers: state.test.answers,
-        marking: state.test.marking
-    };
-}
-
-function saveTestObject(testObj) {
-    localStorage.setItem(makeTestKey(testObj.meta.id), JSON.stringify(testObj));
-
-    const index = loadSavesIndex();
-    index.unshift({ id: testObj.meta.id, name: testObj.meta.name, createdAt: testObj.meta.createdAt });
-    storeSavesIndex(index);
-}
-
-function loadTestById(id) {
-    const raw = localStorage.getItem(makeTestKey(id));
-    if (!raw) {
-        return null;
-    }
-    try {
-        return JSON.parse(raw);
-    } catch {
-        return null;
-    }
-}
-
-function deleteTestById(id) {
-    localStorage.removeItem(makeTestKey(id));
-    const index = loadSavesIndex().filter(x => x.id !== id);
-    storeSavesIndex(index);
-}
-
-/***************************************************************
- *  SIDEBARS (SAVED TESTS & SETTINGS)
- ***************************************************************/
-function closeAllSidebars() {
-    document.getElementById("sidebar").classList.remove("open");
-    document.getElementById("settingsSidebar").classList.remove("open");
-    document.getElementById("sidebarOverlay").classList.remove("show");
-}
-
-function openSidebar() {
-    document.getElementById("settingsSidebar").classList.remove("open");
-    document.getElementById("sidebar").classList.add("open");
-    document.getElementById("sidebarOverlay").classList.add("show");
-    getOptions();
-}
-
-function closeSidebar() {
-    closeAllSidebars();
-}
-
-function openSettingsSidebar() {
-    document.getElementById("sidebar").classList.remove("open");
-    document.getElementById("settingsSidebar").classList.add("open");
-    document.getElementById("sidebarOverlay").classList.add("show");
-    document.getElementById("apiKeyInput").value = getApiKey();
-    document.getElementById("apiKeyStatus").textContent = "";
-}
-
-function closeSettingsSidebar() {
-    closeAllSidebars();
-}
-
-function getOptions() {
-    const sidebarDiv = document.getElementById("sidebar-content");
-    sidebarDiv.innerHTML = "";
+function renderSavedTestsList() {
+    dom.sidebarContent.innerHTML = "";
 
     const index = loadSavesIndex();
     if (index.length === 0) {
-        sidebarDiv.innerHTML = "<p class='empty-saves-msg'>No saved tests yet.</p>";
+        dom.sidebarContent.innerHTML = "<p class='empty-saves-msg'>No saved tests yet.</p>";
         return;
     }
 
     index.forEach(item => {
         const quizDiv = document.createElement("div");
-        quizDiv.id = `quiz-${item.id}`;
         quizDiv.className = "saved-quiz-item";
 
         const quizLink = document.createElement("a");
         quizLink.textContent = item.name;
         quizLink.className = "saved-quiz-link";
-        quizLink.onclick = () => loadPageState(item.id);
+        quizLink.addEventListener("click", () => loadSavedTest(item.id));
 
         const deleteBtn = document.createElement("button");
         deleteBtn.type = "button";
         deleteBtn.textContent = "🗑";
         deleteBtn.className = "delete-btn";
         deleteBtn.title = "Delete saved test";
-        deleteBtn.onclick = () => {
+        deleteBtn.setAttribute("aria-label", `Delete ${item.name}`);
+        deleteBtn.addEventListener("click", () => {
             deleteTestById(item.id);
-            getOptions();
-        };
+            renderSavedTestsList();
+        });
 
         quizDiv.appendChild(quizLink);
         quizDiv.appendChild(deleteBtn);
-        sidebarDiv.appendChild(quizDiv);
+        dom.sidebarContent.appendChild(quizDiv);
     });
 }
 
-/***************************************************************
- *  POPUP (SAVE NAME)
- ***************************************************************/
-function showPopup() {
-    document.getElementById("popupOverlay").classList.add("show");
-    document.getElementById("popup").classList.add("show");
-    document.getElementById("nameInput").focus();
+function closeAllSidebars() {
+    dom.sidebar.classList.remove("open");
+    dom.settingsSidebar.classList.remove("open");
+    dom.sidebarOverlay.classList.remove("show");
 }
 
-function closePopup() {
-    document.getElementById("popup").classList.remove("show");
-    document.getElementById("popupOverlay").classList.remove("show");
+function openSidebar() {
+    dom.settingsSidebar.classList.remove("open");
+    dom.sidebar.classList.add("open");
+    dom.sidebarOverlay.classList.add("show");
+    renderSavedTestsList();
 }
 
-function submitName() {
-    const name = document.getElementById("nameInput").value;
-    document.getElementById("nameInput").value = "";
-    closePopup();
-    savePageState(name);
+function openSettingsSidebar() {
+    dom.sidebar.classList.remove("open");
+    dom.settingsSidebar.classList.add("open");
+    dom.sidebarOverlay.classList.add("show");
+    dom.apiKeyInput.value = getApiKey();
+    dom.apiKeyStatus.textContent = "";
+    dom.apiKeyInput.focus();
 }
 
-/***************************************************************
- *  SAVE/LOAD PAGE STATE
- ***************************************************************/
-function savePageState(name) {
-    try {
-        const testObj = buildSavedTestObject(name);
-        saveTestObject(testObj);
-        getOptions();
-        document.getElementById("mainButton").innerText = "Saved!";
-    } catch (e) {
-        console.error("Save failed:", e);
-        alert("Save failed. Storage might be full.");
-    }
+function showSavePopup() {
+    dom.popupOverlay.classList.add("show");
+    dom.savePopup.classList.add("show");
+    dom.nameInput.focus();
 }
 
-function loadPageState(id) {
-    const obj = loadTestById(id);
-    if (!obj) {
-        alert("Could not load that save.");
+function closeSavePopup() {
+    dom.savePopup.classList.remove("show");
+    dom.popupOverlay.classList.remove("show");
+}
+
+function handleSaveNameSubmit() {
+    const name = dom.nameInput.value;
+    dom.nameInput.value = "";
+    closeSavePopup();
+    saveCurrentTest(name);
+}
+
+function triggerConfetti() {
+    if (typeof JSConfetti === "undefined") {
         return;
     }
-
-    // Restore config
-    state.config.mcqCount = obj.config?.mcqCount ?? 0;
-    state.config.choicesPerQuestion = obj.config?.choicesPerQuestion ?? 2;
-    state.config.saqCount = obj.config?.saqCount ?? 0;
-    state.config.saqMaxScore = obj.config?.saqMaxScore ?? 4;
-    syncCountersToUI();
-
-    // Restore metadata & test
-    state.pdf.name = obj.meta?.pdfName ?? null;
-    state.test.questions = obj.questions ?? { mcq: [], saq: [] };
-    state.test.answers = obj.answers ?? { mcqSelectedIndex: [], saqText: [] };
-    state.test.marking = obj.marking ?? null;
-
-    // Mode depends on whether it was marked
-    if (state.test.marking && state.test.marking.status === "marked") {
-        state.mode = "marked";
-    } else {
-        state.mode = "taking";
+    if (!jsConfettiInstance) {
+        jsConfettiInstance = new JSConfetti();
     }
-
-    hideError();
-
-    // Render and apply marking if needed
-    renderQuestions();
-    applyMarkingToUI();
-
-    closeSidebar();
+    jsConfettiInstance.addConfetti();
 }
 
-/***************************************************************
- *  MAIN FORM SUBMIT HANDLER
- ***************************************************************/
-async function handleSubmit(event) {
+async function handleFormSubmit(event) {
     event.preventDefault();
 
-    const mainButton = document.getElementById("mainButton");
-    if (mainButton.disabled) {
+    if (dom.mainButton.disabled) {
         return;
     }
 
     hideError();
 
     if (state.mode === "setup") {
-        if (!fileUploaded || !state.pdf.extractedText) {
+        if (!state.pdf.extractedText) {
             showError("Please upload a PDF file before generating questions.");
             return;
         }
@@ -845,12 +823,12 @@ async function handleSubmit(event) {
     }
 
     if (state.mode === "marked") {
-        showPopup();
+        showSavePopup();
         return;
     }
 
-    mainButton.disabled = true;
-    mainButton.innerText = "Loading...";
+    dom.mainButton.disabled = true;
+    dom.mainButton.textContent = "Loading...";
 
     try {
         if (state.mode === "setup") {
@@ -861,45 +839,67 @@ async function handleSubmit(event) {
 
         if (state.mode === "taking") {
             await markTest();
-            renderQuestions();       // re-render to ensure clean base
-            applyMarkingToUI();      // then apply ticks/feedback
-
-            if (typeof JSConfetti !== "undefined") {
-                if (!jsConfettiInstance) {
-                    jsConfettiInstance = new JSConfetti();
-                }
-                jsConfettiInstance.addConfetti();
-            }
-            return;
+            renderQuestions();
+            applyMarkingToUI();
+            triggerConfetti();
         }
-    } catch (e) {
-        console.error(e);
-        showError(e.message || "Something went wrong.");
+    } catch (err) {
+        console.error(err);
+        showError(err.message || "Something went wrong. Please try again.");
     } finally {
-        mainButton.disabled = false;
+        dom.mainButton.disabled = false;
         updateMainButtonText();
     }
 }
 
-/***************************************************************
- *  INIT
- ***************************************************************/
-document.getElementById("nameInput").addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-        event.preventDefault();
-        submitName();
-    }
-});
+function bindEventListeners() {
+    dom.openSidebarBtn.addEventListener("click", openSidebar);
+    dom.openSettingsBtn.addEventListener("click", openSettingsSidebar);
+    dom.closeSidebarBtn.addEventListener("click", closeAllSidebars);
+    dom.closeSettingsBtn.addEventListener("click", closeAllSidebars);
+    dom.sidebarOverlay.addEventListener("click", closeAllSidebars);
 
-document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-        closePopup();
-        closeAllSidebars();
-    }
-});
+    dom.saveApiKeyBtn.addEventListener("click", saveApiKey);
+    dom.apiKeyInput.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            saveApiKey();
+        }
+    });
 
-// Make counters display correct initial values
-syncCountersToUI();
+    dom.closePopupBtn.addEventListener("click", closeSavePopup);
+    dom.popupOverlay.addEventListener("click", closeSavePopup);
+    dom.submitNameBtn.addEventListener("click", handleSaveNameSubmit);
+    dom.nameInput.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+            event.preventDefault();
+            handleSaveNameSubmit();
+        }
+    });
 
-// Load sidebar options on startup
-getOptions();
+    dom.uploadFileBtn.addEventListener("click", handleFileUpload);
+    dom.questionsForm.addEventListener("submit", handleFormSubmit);
+
+    document.querySelectorAll("[data-counter]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const type = btn.getAttribute("data-counter");
+            const delta = parseInt(btn.getAttribute("data-delta"), 10);
+            updateCounter(type, delta);
+        });
+    });
+
+    document.addEventListener("keydown", event => {
+        if (event.key === "Escape") {
+            closeSavePopup();
+            closeAllSidebars();
+        }
+    });
+}
+
+function init() {
+    bindEventListeners();
+    syncCountersToUI();
+    renderSavedTestsList();
+}
+
+init();
