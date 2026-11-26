@@ -2,11 +2,17 @@
  * 1. STATE & CONFIG
  ***************************************************************/
 const CONFIG = {
-    openaiModel: "gpt-4o-mini",
+    openaiModel: "gpt-4.1-mini",
     proxyEndpoint: "/api/openai",
     openaiEndpoint: "https://api.openai.com/v1/chat/completions",
     pdfWorkerSrc: "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js",
-    acceptedFileTypes: ".pdf, application/pdf, .eoghanIsTheBest, .iftiIsTheBestToo",
+    acceptedFileTypes: ".pdf, application/pdf, .eoghan",
+    limits: {
+        mcqMax: 20,
+        choicesMin: 2,
+        choicesMax: 6,
+        saqMax: 10
+    },
     storageKeys: {
         apiKey: "__OPENAI_API_KEY__",
         savesIndex: "__SAVED_TESTS_INDEX_V1__",
@@ -20,13 +26,15 @@ if (typeof pdfjsLib !== "undefined") {
 
 /**
  * Application state:
- * - mode: "setup" | "taking" | "marked"
+ * - mode: "setup" | "taking" | "marked" | "saved"
  * - test.questions: { mcq: [{ id, prompt, choices[], answerIndex }], saq: [{ id, prompt, maxScore }] }
  * - test.answers:   { mcqSelectedIndex: (number|null)[], saqText: string[] }
  * - test.marking:   { status, totals, mcq[], saq[], modelInfo } | null
  */
 const state = {
     mode: "setup",
+    isBusy: false,
+    currentSaveId: null,
     config: {
         mcqCount: 0,
         choicesPerQuestion: 2,
@@ -68,10 +76,12 @@ const dom = {
     mcqCounter: document.getElementById("multiple-choice-counter"),
     choicesCounter: document.getElementById("choices-per-question-counter"),
     saqCounter: document.getElementById("short-answer-counter"),
+    counterButtons: document.querySelectorAll("[data-counter]"),
     errorMessage: document.getElementById("error-message"),
     questionsForm: document.getElementById("questions-form"),
     questionsContainer: document.getElementById("questions-container"),
-    mainButton: document.getElementById("main-button")
+    mainButton: document.getElementById("main-button"),
+    newExamBtn: document.getElementById("new-exam-btn")
 };
 
 /***************************************************************
@@ -98,6 +108,10 @@ async function extractTextFromPDF(file) {
 }
 
 function handleFileUpload() {
+    if (state.isBusy) {
+        return;
+    }
+
     const input = document.createElement("input");
     input.type = "file";
     input.accept = CONFIG.acceptedFileTypes;
@@ -108,10 +122,9 @@ function handleFileUpload() {
             return;
         }
 
+        const previousMessage = dom.fileUploadedMessage.textContent;
         hideError();
         dom.fileUploadedMessage.textContent = "Reading PDF...";
-        state.pdf.name = null;
-        state.pdf.extractedText = "";
 
         try {
             const extractedText = await extractTextFromPDF(file);
@@ -124,6 +137,7 @@ function handleFileUpload() {
 
             // Reset to setup mode so a new test can be generated from this PDF
             state.mode = "setup";
+            state.currentSaveId = null;
             state.test.questions = { mcq: [], saq: [] };
             state.test.answers = { mcqSelectedIndex: [], saqText: [] };
             state.test.marking = null;
@@ -132,7 +146,7 @@ function handleFileUpload() {
             dom.fileUploadedMessage.textContent = `✔ Uploaded: ${file.name}`;
         } catch (err) {
             console.error("PDF extraction failed:", err);
-            dom.fileUploadedMessage.textContent = "";
+            dom.fileUploadedMessage.textContent = previousMessage;
             showError(err.message || "Failed to read PDF file. Please upload a valid PDF.");
         }
     };
@@ -257,7 +271,12 @@ async function callOpenAIJSON(userPrompt, model = CONFIG.openaiModel) {
     }
 
     const data = await response.json();
-    const content = data.choices?.[0]?.message?.content ?? "{}";
+    const choice = data.choices?.[0];
+    if (choice?.finish_reason === "length") {
+        throw new Error("The AI response was cut off because it was too long. Try requesting fewer questions.");
+    }
+
+    const content = choice?.message?.content ?? "{}";
 
     try {
         return JSON.parse(content);
@@ -319,6 +338,7 @@ function buildSAQMarkingPrompt(items, maxScore) {
 You are marking short-answer exam questions.
 
 Each question should be scored from 0 to ${maxScore}.
+If an answer is blank, score it 0 and briefly note what a strong answer should cover.
 Provide ONE sentence of constructive feedback per answer.
 
 QUESTIONS AND ANSWERS:
@@ -526,8 +546,10 @@ function saveCurrentTest(name) {
     try {
         const testObj = buildSavedTestObject(name);
         saveTestObject(testObj);
+        state.mode = "saved";
+        state.currentSaveId = testObj.meta.id;
         renderSavedTestsList();
-        dom.mainButton.textContent = "Saved!";
+        syncControlsToMode();
     } catch (err) {
         console.error("Save failed:", err);
         showError("Could not save test. Browser storage may be full.");
@@ -535,6 +557,10 @@ function saveCurrentTest(name) {
 }
 
 function loadSavedTest(id) {
+    if (state.isBusy) {
+        return;
+    }
+
     const saved = loadTestById(id);
     if (!saved) {
         showError("Could not load the selected saved test.");
@@ -548,10 +574,17 @@ function loadSavedTest(id) {
     syncCountersToUI();
 
     state.pdf.name = saved.meta?.pdfName ?? null;
+    state.pdf.extractedText = "";
     state.test.questions = saved.questions ?? { mcq: [], saq: [] };
     state.test.answers = saved.answers ?? { mcqSelectedIndex: [], saqText: [] };
     state.test.marking = saved.marking ?? null;
-    state.mode = state.test.marking?.status === "marked" ? "marked" : "taking";
+    state.currentSaveId = id;
+    state.mode = state.test.marking?.status === "marked" ? "saved" : "taking";
+
+    const savedName = saved.meta?.name || "Saved exam";
+    dom.fileUploadedMessage.textContent = state.pdf.name
+        ? `Loaded save: ${savedName} (${state.pdf.name})`
+        : `Loaded save: ${savedName}`;
 
     hideError();
     renderQuestions();
@@ -587,31 +620,81 @@ function syncCountersToUI() {
 }
 
 function updateCounter(type, delta) {
+    if (state.mode !== "setup" || state.isBusy) {
+        return;
+    }
+
     if (type === "multipleChoice") {
-        state.config.mcqCount = Math.max(0, state.config.mcqCount + delta);
+        state.config.mcqCount = clampInt(state.config.mcqCount + delta, 0, CONFIG.limits.mcqMax);
     } else if (type === "choicesPerQuestion") {
-        state.config.choicesPerQuestion = Math.max(2, state.config.choicesPerQuestion + delta);
+        state.config.choicesPerQuestion = clampInt(
+            state.config.choicesPerQuestion + delta,
+            CONFIG.limits.choicesMin,
+            CONFIG.limits.choicesMax
+        );
     } else if (type === "shortAnswer") {
-        state.config.saqCount = Math.max(0, state.config.saqCount + delta);
+        state.config.saqCount = clampInt(state.config.saqCount + delta, 0, CONFIG.limits.saqMax);
     }
 
     syncCountersToUI();
     hideError();
 }
 
-function updateMainButtonText() {
+function syncControlsToMode() {
+    const countersDisabled = state.mode !== "setup" || state.isBusy;
+    dom.counterButtons.forEach(btn => {
+        btn.disabled = countersDisabled;
+    });
+
+    dom.uploadFileBtn.disabled = state.isBusy;
+    dom.newExamBtn.hidden = !(state.mode === "marked" || state.mode === "saved");
+
+    if (state.isBusy) {
+        dom.mainButton.textContent = "Loading...";
+        dom.mainButton.disabled = true;
+        return;
+    }
+
     if (state.mode === "setup") {
         dom.mainButton.textContent = "Generate Questions";
+        dom.mainButton.disabled = false;
     } else if (state.mode === "taking") {
         dom.mainButton.textContent = "Submit Answers";
+        dom.mainButton.disabled = false;
     } else if (state.mode === "marked") {
         dom.mainButton.textContent = "Save";
+        dom.mainButton.disabled = false;
+    } else if (state.mode === "saved") {
+        dom.mainButton.textContent = "Saved!";
+        dom.mainButton.disabled = true;
     }
+}
+
+function resetToSetup() {
+    if (state.isBusy) {
+        return;
+    }
+
+    state.mode = "setup";
+    state.currentSaveId = null;
+    state.test.questions = { mcq: [], saq: [] };
+    state.test.answers = { mcqSelectedIndex: [], saqText: [] };
+    state.test.marking = null;
+
+    if (state.pdf.extractedText && state.pdf.name) {
+        dom.fileUploadedMessage.textContent = `✔ Uploaded: ${state.pdf.name}`;
+    } else {
+        state.pdf.name = null;
+        dom.fileUploadedMessage.textContent = "";
+    }
+
+    hideError();
+    renderQuestions();
 }
 
 function renderQuestions() {
     dom.questionsContainer.innerHTML = "";
-    const isMarked = state.mode === "marked";
+    const isLocked = state.mode === "marked" || state.mode === "saved";
 
     const mcqSection = document.createElement("div");
     mcqSection.id = "mcq-section";
@@ -642,7 +725,7 @@ function renderQuestions() {
 
         q.choices.forEach((choice, cIndex) => {
             const checked = state.test.answers.mcqSelectedIndex[i] === cIndex ? "checked" : "";
-            const disabled = isMarked ? "disabled" : "";
+            const disabled = isLocked ? "disabled" : "";
             html += `<label>
                         <input type="radio" name="q${i + 1}" value="${cIndex}" ${checked} ${disabled}>
                         ${escapeHTML(choice)}
@@ -656,7 +739,7 @@ function renderQuestions() {
     state.test.questions.saq.forEach((q, i) => {
         const questionNumber = state.test.questions.mcq.length + i + 1;
         const existingText = state.test.answers.saqText[i] ?? "";
-        const readonly = isMarked ? "readonly" : "";
+        const readonly = isLocked ? "readonly" : "";
         const html = `<div class="question" data-qtype="saq" data-index="${i}">
                         <p><strong>${questionNumber}) ${escapeHTML(q.prompt)}</strong></p>
                         <textarea ${readonly}>${escapeHTML(existingText)}</textarea>
@@ -664,7 +747,7 @@ function renderQuestions() {
         saqSection.insertAdjacentHTML("beforeend", html);
     });
 
-    updateMainButtonText();
+    syncControlsToMode();
 }
 
 function applyMarkingToUI() {
@@ -673,6 +756,17 @@ function applyMarkingToUI() {
     }
 
     const { totals } = state.test.marking;
+
+    // Render overall score banner at top of questions container
+    dom.questionsContainer.querySelectorAll(".total-score-banner").forEach(el => el.remove());
+    if (totals.totalMax > 0) {
+        const pct = Math.round((totals.totalScore / totals.totalMax) * 100);
+        const banner = document.createElement("div");
+        banner.className = "total-score-banner";
+        banner.textContent = `Total Score: ${totals.totalScore}/${totals.totalMax} (${pct}%)`;
+        dom.questionsContainer.prepend(banner);
+    }
+
     const mcqHeading = document.getElementById("mcq-heading");
     const saqHeading = document.getElementById("saq-heading");
 
@@ -733,7 +827,7 @@ function applyMarkingToUI() {
         div.appendChild(feedbackPara);
     });
 
-    updateMainButtonText();
+    syncControlsToMode();
 }
 
 function renderSavedTestsList() {
@@ -762,6 +856,11 @@ function renderSavedTestsList() {
         deleteBtn.setAttribute("aria-label", `Delete ${item.name}`);
         deleteBtn.addEventListener("click", () => {
             deleteTestById(item.id);
+            if (state.currentSaveId === item.id && state.mode === "saved") {
+                state.currentSaveId = null;
+                state.mode = "marked";
+                syncControlsToMode();
+            }
             renderSavedTestsList();
         });
 
@@ -794,9 +893,12 @@ function openSettingsSidebar() {
 }
 
 function showSavePopup() {
+    const suggestedName = state.pdf.name ? state.pdf.name.replace(/\.pdf$/i, "") : "";
+    dom.nameInput.value = suggestedName;
     dom.popupOverlay.classList.add("show");
     dom.savePopup.classList.add("show");
     dom.nameInput.focus();
+    dom.nameInput.select();
 }
 
 function closeSavePopup() {
@@ -824,7 +926,7 @@ function triggerConfetti() {
 async function handleFormSubmit(event) {
     event.preventDefault();
 
-    if (dom.mainButton.disabled) {
+    if (state.isBusy || dom.mainButton.disabled || state.mode === "saved") {
         return;
     }
 
@@ -846,18 +948,20 @@ async function handleFormSubmit(event) {
         return;
     }
 
-    dom.mainButton.disabled = true;
-    dom.mainButton.textContent = "Loading...";
+    state.isBusy = true;
+    syncControlsToMode();
 
     try {
         if (state.mode === "setup") {
             await generateQuestionsFromPDF();
+            state.currentSaveId = null;
             renderQuestions();
             return;
         }
 
         if (state.mode === "taking") {
             await markTest();
+            state.currentSaveId = null;
             renderQuestions();
             applyMarkingToUI();
             triggerConfetti();
@@ -866,8 +970,8 @@ async function handleFormSubmit(event) {
         console.error(err);
         showError(err.message || "Something went wrong. Please try again.");
     } finally {
-        dom.mainButton.disabled = false;
-        updateMainButtonText();
+        state.isBusy = false;
+        syncControlsToMode();
     }
 }
 
@@ -898,8 +1002,9 @@ function bindEventListeners() {
 
     dom.uploadFileBtn.addEventListener("click", handleFileUpload);
     dom.questionsForm.addEventListener("submit", handleFormSubmit);
+    dom.newExamBtn.addEventListener("click", resetToSetup);
 
-    document.querySelectorAll("[data-counter]").forEach(btn => {
+    dom.counterButtons.forEach(btn => {
         btn.addEventListener("click", () => {
             const type = btn.getAttribute("data-counter");
             const delta = parseInt(btn.getAttribute("data-delta"), 10);
@@ -918,6 +1023,7 @@ function bindEventListeners() {
 function init() {
     bindEventListeners();
     syncCountersToUI();
+    syncControlsToMode();
     renderSavedTestsList();
 }
 

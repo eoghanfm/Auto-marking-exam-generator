@@ -8,7 +8,7 @@ A lightweight web application that turns PDF lecture notes into custom universit
 - **Customizable Exam Generation**: Choose the exact number of multiple-choice questions (MCQs), answer choices per MCQ, and short-answer questions (SAQs).
 - **Automated Marking & Feedback**:
   - MCQs are graded locally with instant visual indicators (`✔` / `✘`) and section scores.
-  - SAQs are graded in a single batch via OpenAI (`gpt-4o-mini`) with per-question scores and constructive feedback.
+  - SAQs are graded in a single batch via OpenAI (`gpt-4.1-mini`) with per-question scores and constructive feedback.
 - **Serverless API Proxy + Optional Key Override**: Requests go through `/api/openai` by default so your OpenAI API key stays hidden on the server, while users can still optionally supply their own key in the Settings drawer.
 - **Save & Reload Tests**: Save completed tests under custom names in `localStorage`, revisit marked results anytime from the Saved Tests drawer, or delete old saves.
 - **Zero Build Step**: Pure vanilla HTML, CSS, and JavaScript—no frontend frameworks or bundlers required.
@@ -18,7 +18,7 @@ A lightweight web application that turns PDF lecture notes into custom universit
 - **Frontend**: Vanilla HTML5, CSS3, JavaScript (ES6+)
 - **Backend Proxy**: Vercel Node.js Serverless Function (`api/openai.js`)
 - **PDF Parsing**: [PDF.js](https://mozilla.github.io/pdf.js/) (`3.4.120` via CDN)
-- **AI Generation & Marking**: [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) (`gpt-4o-mini`, JSON mode)
+- **AI Generation & Marking**: [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat) (`gpt-4.1-mini`, JSON mode)
 - **Celebration Effects**: [js-confetti](https://github.com/loonywizard/js-confetti) (via CDN)
 - **Storage**: Browser `localStorage`
 
@@ -44,7 +44,7 @@ By default, the browser never sees your OpenAI API key:
    - The HTTP method is `POST` (returns `405` otherwise).
    - The `Origin` / `Referer` header is from `localhost` or a `*.vercel.app` domain (returns `403` otherwise).
    - `process.env.OPENAI_API_KEY` is configured (returns `500` otherwise).
-3. The proxy forwards the request to `https://api.openai.com/v1/chat/completions` using a server-enforced model (`gpt-4o-mini`) and `max_tokens` cap (`2500`), then returns OpenAI's status code and JSON response.
+3. The proxy forwards the request to `https://api.openai.com/v1/chat/completions` using a server-enforced model (`gpt-4.1-mini`) and `max_tokens` cap (`2500`), then returns OpenAI's status code and JSON response.
 4. **Optional User Override**: If a user enters their own OpenAI API key in **Settings (`⚙️`)**, `app.js` saves it to `localStorage` and calls OpenAI directly using that key. Clearing the key automatically falls back to `/api/openai`.
 
 ## Deploying on Vercel

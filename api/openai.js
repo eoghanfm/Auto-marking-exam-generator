@@ -1,5 +1,5 @@
 const OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions";
-const ENFORCED_MODEL = "gpt-4o-mini";
+const ENFORCED_MODEL = "gpt-4.1-mini";
 const MAX_TOKENS = 2500;
 
 function isAllowedOrigin(originOrReferer) {
